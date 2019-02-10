@@ -7,10 +7,6 @@ import os
 import random
 from tmath import *
 
-#Input = collections.namedtuple("Input", ["tx_id", "index"])
-#Input = collections.namedtuple("Input", ["point"])
-#BlindOutput = collections.namedtuple("BlindOutput", ["point"])
-
 
 p = 2 ** 256 - 2 ** 32 - 2 ** 9 - 2 ** 8 - 2 ** 7 - 2 ** 6 - 2 ** 4 - 1
 z = Z(p)
@@ -18,12 +14,15 @@ secp256k1 = EC(z, z.fromInt(0), z.fromInt(7))
 # This random value for G is a random value. Trust me. Winkwink.
 G = secp256k1.fromX(z.fromInt(0x19BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81797))
 H = secp256k1.fromX(z.fromInt(0x79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798))
-Hfield = ECSubfield(secp256k1, H, 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141)      
 
 class OwnedOutput(collections.namedtuple("OwnedOutput", ["value", "bf"])):
+    @classmethod
+    def generate(cls, value):
+      return OwnedOutput(value, Signature.gen_private_key())
+
     def blind(self):
         res = secp256k1.plus(H.scalarMul(self.bf), G.scalarMul(self.value))
-        print "%s * G + %s * H = %s" % (self.value, self.bf, res)
+        # print "%s * G + %s * H = %s" % (self.value, self.bf, res)
         return res
 
 
@@ -35,90 +34,86 @@ class BadSignatureError(Exception):
     pass
 
 
+class OwnedTransaction(collections.namedtuple("OwnedTransaction", ["inputs", "outputs"])):
 
-class OwnedTransaction(collections.namedtuple("Transaction", ["inputs", "outputs"])):
-    def sign():
-        pass
+    def close(self):
+        excess = OwnedOutput.generate(0)
+
+        # The opening information on the sum is
+        # the amount of coins sent and the sum of the blinding factors.
+        v = sum([o.value for o in self.inputs]) - sum([o.value for o in self.outputs])
+#        print [o.bf for o in owned_outputs], [o.bf for o in new_outputs], excess.bf
+        r = sum([o.bf for o in self.inputs]) - sum([o.bf for o in self.outputs]) + excess.bf
+
+        t = Transaction(inputs = [o.blind() for o in self.inputs],
+                        outputs = [o.blind() for o in self.outputs],
+                        kernel = excess.blind(),
+                        signature = Signature.sign(Signature.WITNESS_MAGIC, r)
+        )
+        return (t, v, r)
+
 
 class Transaction(collections.namedtuple("Transaction", ["inputs", "outputs", "kernel", "signature"])):
-    
-    def tx_id(self):
-        return hashlib.sha256(str(self)).digest()
+
+    @classmethod
+    def merge(cls, t1, t2):
+        return Transaction(inputs = t1.inputs + t2.inputs,
+                           outputs = t1.outputs + t2.outputs,
+                           kernel = secp256k1.plus(t1.kernel, t2.kernel),
+                           signature = Signature.merge(t1.signature, t2.signature))
 
     def sum(self):
-        s = self.kernel
-#        print "x", s
-        for p in self.inputs:
-#            print p
-            s = secp256k1.plus(s, p)
-        for p in self.outputs:
-#            print p
-            s = secp256k1.plus(s, p.plusInv())
-        return s
+        return reduce(secp256k1.plus, self.inputs + [o.plusInv() for o in self.outputs], self.kernel)
 
 
 class Chain(object):
 
-    def __init__(self, genesis):
-        # Do not verify the genesis transaction
-        self.utxo = set()
-        self.add_utxo(genesis)
-
-    def add_utxo(self, tx):
-        self.utxo.update([o for o in tx.outputs])
+    def __init__(self, genesis_output):
+        # Do not verify the blinded genesis output point
+        self.utxo = set([genesis_output])
 
 
     def process_tx(self, tx):
-        i_amount = 0
         new_utxo = set(self.utxo)
-        ec = secp256k1.plusID()
         for p in tx.inputs:
-            if p not in list(self.utxo):
-                raise InputReferenceError("Input %s not found in utxo set: %s" % (p, self.utxo))
-            self.utxo.remove(p)
-            ec = secp256k1.plus(ec, p)
+            if p not in new_utxo:
+                raise InputReferenceError("Input %s not found in utxo set: %s" % (p, new_utxo))
+            new_utxo.remove(p)
 
-        for p in tx.outputs:
-            ec = secp256k1.plus(ec, p.plusInv())
-        ec = secp256k1.plus(ec, tx.kernel)
+        # The transaction sum should have the form: v * G + r * H with
+        # v == 0. If we would know 'r', we could check that with:
+        #
+        #   tx.sum() == secp256k1.plus(G.scalarMul(0), H.scalarMul(r)).
+        #
+        # But we do not know 'r'. Actually we do not really care which
+        # value 'r' has, as long as the coefficient for G is zero as
+        # this proves that the transaction is balanced and does not
+        # create money. The main trick of Mimblewimble is to
+        # reinterpret tx.sum() as public key under a EC signature
+        # scheme, such as Schnorr signatures. Somebody that knows 'r'
+        # can prove to us that the G-coefficient is zero, by using the
+        # whole tx.sum() as public key and producing a signature using
+        # 'r' which is the corresponding private key.
+        #
+        # It doesn't matter what is signed, only that the signature is
+        # valid. We use a constant WITNESS_MAGIC as signature message.
 
-        # ec should be r * G + 0 * H. If this is indeed the case, then
-        # r*G is a public key under Schnorr signatures or ecdsa
-        # signatures. The transaction builders should have conspired
-        # to get 'r' and should have signed the tx_id with r.
-        if not schnorr2_verify(ec, "HELLO", tx.signature[0], tx.signature[1]):
-            # not proven to be a zero-value commit.
+        if not tx.signature.verify(tx.sum(), Signature.WITNESS_MAGIC):
+            # tx.sum() was not proven to be of the form v*G + r*H with
+            # v == 0. It might have a positive 'v' and therefore
+            # created money out of nothing. We reject it.
             raise BadSignatureError("Invalid signature on excess")
-        
+
+        new_utxo.update(tx.outputs)
         self.utxo = new_utxo
-        self.add_utxo(tx)
-
-
-
-#OwnedUTXO = namedtuple("OwnedUTXO", ["tx_id", "index", "value", "blinding_factor"])
-
-def generate_output(value):
-    return OwnedOutput(value, rscal())
-
-
-def combine_blind_outputs(o1, o2):
-    return BlindOutput(o1.point.add(o2.point))
 
 
 class Actor():
-    def __init__(self, txs):
-        self.wallet = set(txs)
-        
-    def prove_ownership(tx_id, index, msg):
-        bo = chain.utxo[(tx_id, index)]
-        owned = self.wallet[bo]
+    """Mimblewimble actor, and wallet owner."""
 
-        r1 = rscal()
-        bo_r1, owned_r1 = generate_output(r1)
-        # owned_r1.v *G + owned.v * G  + owned.bf * H + owned_r1.bf * H =
-        # (owned_r1 + owned.v) * G + (owned.bf + owned_r1.bf) * H 
-        x = combine_blind_output(bo_r1, bo)
-        owned_r1.bf + owned.bf 
+    def __init__(self, txs):
+        # Set of owned outputs
+        self.wallet = set(txs)
 
     def send(self, n):
         owned_outputs = []
@@ -128,112 +123,76 @@ class Actor():
             owned_outputs += [c]
             candidates.remove(c)
         # FIXME add a few unrelated inputs for confusion
-        
+
         diff = sum([o.value for o in owned_outputs]) - n
         if diff < 0:
             raise ValueError("Not enough coins")
 
         # FIXME add more change outputs for confusion
-        new_outputs = [generate_output(diff)]
+        new_outputs = [OwnedOutput.generate(diff)]
 
-        excess = generate_output(0)
-        
-        # The opening information on the sum is
-        # the amount of coins sent and the sum of the blinding factors.
-        v = sum([o.value for o in owned_outputs]) - sum([o.value for o in new_outputs])
-        assert v == n
-#        print [o.bf for o in owned_outputs], [o.bf for o in new_outputs], excess.bf
-        r = sum([o.bf for o in owned_outputs]) - sum([o.bf for o in new_outputs]) + excess.bf
-        
-        t = Transaction(inputs = [o.blind() for o in owned_outputs],
-                        outputs = [o.blind() for o in new_outputs],
-                        kernel = excess.blind(),
-                        #signature = None
-                        signature = schnorr2_sign("HELLO", r)
-        #                signature = excess.sign("HELLO")
-        )
-        return (t, v, r)
-    
-    def receive(self, t, v, r):
-        # FIXME what do I need r for?
-        # Verify
-        a = t.sum()
-#        b = secp256k1.plus(G.scalarMul(v), H.scalarMul(r))
-
-        if not a == OwnedOutput(v, r).blind():
-            raise ValueError("incorrect opening information.")
-        new_outputs = [generate_output(v)]
-        excess = generate_output(0)
-        r = sum([]) - sum([o.bf for o in new_outputs]) + excess.bf
-        mine = Transaction(inputs = [],
-                           outputs = [o.blind() for o in new_outputs],
-                           kernel = excess.blind(),
-                           signature = schnorr2_sign("HELLO", r)
-        #                   signature = excess.sign("HELLO")
-        )
+        self.wallet.difference_update(owned_outputs)
         self.wallet.update(new_outputs)
-        m = mergeTransactions(t, mine)
-#        if not m.sum() == OwnedOutput(0, 16).blind():
-#            print "doesn't"
-#        else:
-#            print "XXXX"
-#        fake = Transaction(inputs = m.inputs,
-#                           outputs = m.outputs,
-#                           kernel = m.kernel,
-#                           signature = schnorr2_sign("HELLO", 16))
+        (t, v, r) = OwnedTransaction(inputs = owned_outputs, outputs = new_outputs).close()
+        assert v == n
+        return (t, v, r)
+
+    def receive(self, t, v, r):
+        if not t.sum() == OwnedOutput(v, r).blind():
+            raise ValueError("Incorrect opening information. Not receiving the stated amount of coins?")
+
+        # FIXME generate more than more outputs for privacy
+        ot = OwnedTransaction(inputs = [], outputs = [OwnedOutput.generate(v)])
+        self.wallet.update(ot.outputs)
+        (my_t, _, _) = ot.close()
+        m = Transaction.merge(t, my_t)
         return m
-        
-           
+
     def receive2(self, t, v, r):
         # Verify with the opening information that we receive the
         # amounts of coins that we think we get.
         if t.sum() != secp256k1.plus(G.scalarMul(v), H.scalarMul(r)):
             raise ValueError("incorrect opening information.")
-        new_outputs = [generate_output(v)]
+        new_outputs = [OwnedOutput.generate(v)]
         e = rscal()
         new_e = H.scalamult(e)
-        sign = e.sign("HELLO")
+        sign = e.sign(WITNESS_MAGIC)
         modified = Transaction(inputs = t.inputs,
                                outputs = t.outputs + new_outputs,
                                kernel = t.kernel.subtract(new_outputs[0].point()),
                                signature = signature_merge(t.signature, sign))
         return modified
 
-def mergeTransactions(t1, t2):
-    return Transaction(inputs = t1.inputs + t2.inputs,
-                       outputs = t1.outputs + t2.outputs,
-                       kernel = secp256k1.plus(t1.kernel, t2.kernel),
-                       signature = schnorr2_merge(t1.signature, t2.signature))
 
+class Signature(collections.namedtuple("Signature", ["s", "K"])):
+    """Schnorr signatures."""
+    Hfield = ECSubfield(secp256k1, H, 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141)
 
+    # Public reference scalar to be signed. This is usually the message
+    # hash converted to a scalar. But as the message is public, its hash
+    # is public as well, so we just define a public reference scalar right
+    # away.
+    WITNESS_MAGIC = 0xC0DED00D # Google that
 
-def hsh(msg):
-    d = hashlib.sha256(msg).digest()
-    return int(binascii.hexlify(d), 16)
+    @classmethod
+    def sign(cls, e, x):
+        nF = Z(cls.Hfield.order)
+        k = random.randrange(cls.Hfield.order)
+        s = nF.plus(nF.fromInt(k), nF.mul(nF.fromInt(x), nF.fromInt(e)))
+        return Signature(s.toInt(), cls.Hfield.fromInt(k).point)
 
-def schnorr2_sign(msg, x):
-  e = hsh(msg)
-  
-  nF = Z(Hfield.order)
-  k = random.randrange(Hfield.order)
-  s = nF.plus(nF.fromInt(k), nF.mul(nF.fromInt(x), nF.fromInt(e)))
-  
-  return (s.toInt(), Hfield.fromInt(k).point)
+    @classmethod
+    def merge(cls, s1, s2):
+        return Signature(s1.s + s2.s, secp256k1.plus(s1.K, s2.K))
 
-def schnorr2_merge(sig1, sig2):
-    (s1, r1) = sig1
-    (s2, r2) = sig2
-    return (s1 + s2, secp256k1.plus(r1, r2))
+    def verify(self, pubKey, e):
+        S = Signature.Hfield.fromInt(self.s).point
+        V = Signature.Hfield.ec.plus(self.K, pubKey.scalarMul(e))
+        return S == V
 
-def schnorr2_verify(pubKey, msg, s, K):
-    e = hsh(msg)    
-    S = Hfield.fromInt(s).point
-    V = Hfield.ec.plus(K, pubKey.scalarMul(e))
-    return S == V
-
-#FIXME remove this
-random.seed(14)
-def rscal():
-    # FIXME expand size
-    return random.randrange(1, 20)
-#    return random_scalar(os.urandom)
+    @classmethod
+    def gen_private_key(cls):
+        #    # FIXME expand size
+        # FIXME, the underlying EC implementation is not fast enough to support large random values.
+        return random.randrange(1, Signature.Hfield.order)
+        #return random.randrange(1, 1000)

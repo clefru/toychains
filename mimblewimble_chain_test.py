@@ -38,11 +38,11 @@ class GeneratorTests(unittest.TestCase):
 
 class TestFoo(unittest.TestCase):
     def setUp(self):
-        genesis_output = generate_output(1000)
+        genesis_output = OwnedOutput.generate(1000)
         self.genesis_tx = Transaction([], [genesis_output.blind()], None, None)
         self.satoshi = Actor([genesis_output])
         self.clemens = Actor([])
-        self.c = Chain(self.genesis_tx)
+        self.c = Chain(genesis_output.blind())
 #        testy()
     def test_null(self):
         t, v, r = self.satoshi.send(100)
