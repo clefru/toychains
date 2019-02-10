@@ -40,15 +40,20 @@ class TestFoo(unittest.TestCase):
     def setUp(self):
         genesis_output = OwnedOutput.generate(1000)
         self.genesis_tx = Transaction([], [genesis_output.blind()], None, None)
-        self.satoshi = Actor([genesis_output])
-        self.clemens = Actor([])
         self.c = Chain(genesis_output.blind())
+        self.satoshi = Actor([genesis_output], self.c)
+        self.clemens = Actor([], self.c)
 #        testy()
+
     def test_null(self):
-        t, v, r = self.satoshi.send(100)
-        t = self.clemens.receive(t, v, r)
-        self.c.process_tx(t)
-    
+        self.c.process_tx(self.clemens.receive(self.satoshi.send(100)))
+        with self.assertRaises(ValueError):
+            self.c.process_tx(self.satoshi.receive(self.clemens.send(150)))
+        self.c.process_tx(self.clemens.receive(self.satoshi.send(150)))
+        with self.assertRaises(ValueError):
+            self.c.process_tx(self.clemens.receive(self.satoshi.send(1050)))
+        self.c.process_tx(self.satoshi.receive(self.clemens.send(250)))
+                          
     def xtest_input_txid_error(self):
         tx = Transaction([], [])
         s_to_c = Transaction(
