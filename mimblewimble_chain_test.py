@@ -34,8 +34,24 @@ class GeneratorTests(unittest.TestCase):
         p1 = secp256k1.plus(p11, p12)
         p2 = secp256k1.plus(G.scalarMul(16), H.scalarMul(20))
         self.assertEqual(p1, p2)
-    
+    def test_cancel_out_G_H(self):
+        p11 = secp256k1.plus(G.scalarMul(5), H.scalarMul(7))
+        p12 = H.scalarMul(7).plusInv()
+        p1 = secp256k1.plus(p11, p12)
+        p2 = secp256k1.plus(G.scalarMul(5), H.scalarMul(0))
+        self.assertEqual(p1, p2)
+        #        assert H.scalarMul(excess_add.plusInv().toInt()) == H.scalarMul(excess_add.toInt()).plusInv()
 
+        self.assertTrue(secp256k1.plus(G.scalarMul(100).plusInv(), G.scalarMul(100)).isPlusID())
+
+        
+    def test_owned_output(self):
+        self.assertEqual(G.scalarMul(100), OwnedOutput(100, Signature.nF.fromInt(0)).blind())
+        self.assertEqual(G.scalarMul(100).plusInv(), OwnedOutput(100, Signature.nF.fromInt(0)).blind().plusInv())
+        
+        excess_add = Signature.gen_private_key()
+        self.assertEqual(H.scalarMul(excess_add.plusInv().toInt()), H.scalarMul(excess_add.toInt()).plusInv())
+        
 class TestFoo(unittest.TestCase):
     def setUp(self):
         genesis_output = OwnedOutput.generate(1000)
@@ -52,6 +68,8 @@ class TestFoo(unittest.TestCase):
         self.c.process_tx(self.clemens.receive(self.satoshi.send(150)))
         with self.assertRaises(ValueError):
             self.c.process_tx(self.clemens.receive(self.satoshi.send(1050)))
+        print "Owned clemens:", self.clemens.coins_owned()
+        print "Owned satoshi:", self.satoshi.coins_owned()
         self.c.process_tx(self.satoshi.receive(self.clemens.send(250)))
                           
     def xtest_input_txid_error(self):

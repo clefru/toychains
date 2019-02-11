@@ -22,7 +22,7 @@ class OwnedOutput(collections.namedtuple("OwnedOutput", ["value", "bf"])):
 
     def blind(self):
         res = secp256k1.plus(H.scalarMul(self.bf.toInt()), G.scalarMul(self.value))
-        # print "%s * G + %s * H = %s" % (self.value, self.bf, res)
+#        print "%s * G + %s * H = %s" % (self.value, self.bf, res)
         return res
 
 
@@ -36,6 +36,17 @@ class BadSignatureError(Exception):
 
 class OwnedTransaction(collections.namedtuple("OwnedTransaction", ["inputs", "outputs"])):
 
+    def close2(self, excess_r):
+        #v = sum([o.value for o in self.inputs] + [-o.value for o in self.outputs])
+
+        #r = reduce(Signature.nF.plus, [o.bf for o in self.inputs] + [o.bf.plusInv() for o in self.outputs], excess.bf)
+
+        t = Transaction(inputs = [o.blind() for o in self.inputs],
+                        outputs = [o.blind() for o in self.outputs],
+                        excess = H.scalarMul(excess_r.toInt()),
+                        signature = Signature.sign(Signature.WITNESS_MAGIC, excess_r))
+        return t
+        return (t, v, r)
     def close(self):
         excess = OwnedOutput.generate(0)
 
@@ -94,7 +105,10 @@ class Chain(object):
         # It doesn't matter what is signed, only that the signature is
         # valid. We use a constant WITNESS_MAGIC as signature message.
 
-        if not tx.signature.verify(tx.sum(), Signature.WITNESS_MAGIC):
+        if not tx.sum().isPlusID():
+            raise ValueError("inputs and outputs not balanced")
+
+        if not tx.signature.verify(tx.excess, Signature.WITNESS_MAGIC):
             # tx.sum() was not proven to be of the form v*G + r*H with
             # v == 0. It might have a positive 'v' and therefore
             # created money out of nothing. We reject it.
@@ -112,6 +126,15 @@ class Actor():
         self.wallet = set(txs)
         self.chain = c
 
+
+    def coins_owned(self):
+        return sum([t.value for t in self.wallet if (t.blind() in self.chain.utxo)])
+        x = 0
+        for t in self.wallet:
+            if t.blind() in self.chain.utxo:
+                x += t.value
+        return x
+
     def send(self, n):
         owned_outputs = []
         candidates = set(self.wallet)
@@ -127,17 +150,60 @@ class Actor():
             raise ValueError("Not enough coins")
 
         # FIXME add more change outputs for confusion
-        new_outputs = [OwnedOutput.generate(change)]
+        new_outputs = [self.generate_output(change)]
 
         # We do not remove the used outputs as the transaction might
         # not hit the chain for some other reason.
-        self.wallet.update(new_outputs)
 
-        (t, v, r) = OwnedTransaction(inputs = owned_outputs, outputs = new_outputs).close()
+#        excess = OwnedOutput.generate(0)
+
+        v = sum([o.value for o in owned_outputs] + [-o.value for o in new_outputs])
+
+        r = reduce(Signature.nF.plus, [o.bf.plusInv() for o in owned_outputs] + [o.bf for o in new_outputs])
+ #       excess_value = r
+        excess_value = Signature.gen_private_key()
+
+
+#        t = Transaction(inputs = [o.blind() for o in owned_outputs],
+#                        outputs = [o.blind() for o in new_outputs],
+#                        excess = H.scalarMul(excess_value.toInt()),
+#                        signature = Signature.sign(Signature.WITNESS_MAGIC, excess_value))
+        t = OwnedTransaction(inputs = owned_outputs,
+                             outputs = new_outputs).close2(excess_value)
+#        (t, v, r) = OwnedTransaction(inputs = owned_outputs, outputs = new_outputs).close()
+#        assert t.sum() == OwnedOutput(100, Signature.nF.fromInt(0)).blind()
         assert v == n
-        return (t, v, r)
+# FIXME is this a security risk if r=0?
+        return (t, v, Signature.nF.plus(r.plusInv(), excess_value))
+
+
+    def generate_output(self, v):
+        new_output = OwnedOutput.generate(v)
+        self.wallet.update([new_output])
+        return new_output
 
     def receive(self, t):
+        sending_tx, v, r = t
+        # Verify with the opening information that we receive the
+        # amounts of coins that we think we get.
+        if not sending_tx.sum() == OwnedOutput(v, r).blind():
+            raise ValueError("Incorrect opening information. Not receiving the stated amount of coins?")
+
+        # The given transaction is excessive in H by r. We create our excess value to offset that.
+        # The given transaction is excessive in G by v. We create an output to claim that money.
+
+        new_output = self.generate_output(v)
+        excess_r = Signature.nF.plus(new_output.bf, r.plusInv())
+
+        receiving_tx = Transaction(inputs = [],
+                                   outputs = [new_output.blind()],                                 # v*G + bf*H
+                                   excess = H.scalarMul(excess_r.toInt()),                         # 0*G + bf*H - r*H .. so that its summed
+                                                                                                   # together only -v*G remains.
+                                   signature = Signature.sign(Signature.WITNESS_MAGIC, excess_r))
+
+        return Transaction.merge(sending_tx, receiving_tx)
+
+    def receive2(self, t):
         sending_tx, v, r = t
         print v, r
         if not sending_tx.sum() == OwnedOutput(v, r).blind():
@@ -154,21 +220,6 @@ class Actor():
 
         # Creates a balanced transaction that creates no-money.
         return Transaction.merge(sending_tx, receiving_tx.close()[0])
-
-    def receive2(self, t, v, r):
-        # Verify with the opening information that we receive the
-        # amounts of coins that we think we get.
-        if t.sum() != secp256k1.plus(G.scalarMul(v), H.scalarMul(r)):
-            raise ValueError("incorrect opening information.")
-        new_outputs = [OwnedOutput.generate(v)]
-        e = rscal()
-        new_e = H.scalamult(e)
-        sign = e.sign(WITNESS_MAGIC)
-        modified = Transaction(inputs = t.inputs,
-                               outputs = t.outputs + new_outputs,
-                               excess = t.excess.subtract(new_outputs[0].point()),
-                               signature = signature_merge(t.signature, sign))
-        return modified
 
 
 class Signature(collections.namedtuple("Signature", ["s", "K"])):
@@ -199,9 +250,10 @@ class Signature(collections.namedtuple("Signature", ["s", "K"])):
 
     @classmethod
     def gen_private_key(cls):
-        return cls.nF.fromInt(random.randrange(1, Signature.Hfield.order))
+#        return cls.nF.fromInt(random.randrange(1, Signature.Hfield.order))
+        return cls.nF.fromInt(random.randrange(1, 30))
 
 #seed = random.randrange(0,100000)
-seed = 70651
+seed = 70
 print seed
 random.seed(seed)
