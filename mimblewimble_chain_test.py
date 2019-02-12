@@ -4,6 +4,9 @@
 from mimblewimble_chain import *
 import unittest
 
+# Deterministic tests for the moment
+seed = 70
+random.seed(seed)
 
 class GeneratorTests(unittest.TestCase):
     """Tests the used G, H values for being generator."""
@@ -12,25 +15,25 @@ class GeneratorTests(unittest.TestCase):
         p2 = secp256k1.plus(G.scalarMul(7), G.scalarMul(5))
         self.assertEqual(p1, p2)
 
-    def test_commutitative_G_H(self):    
+    def test_commutitative_G_H(self):
         p1 = secp256k1.plus(G.scalarMul(5), H.scalarMul(7))
         p2 = secp256k1.plus(H.scalarMul(7), G.scalarMul(5))
         self.assertEqual(p1, p2)
 
-    def test_scalar_G(self):    
+    def test_scalar_G(self):
         p1 = secp256k1.plus(G.scalarMul(5), G.scalarMul(7))
         p2 = G.scalarMul(12)
         self.assertEqual(p1, p2)
 
-    def test_scalar_H(self):    
+    def test_scalar_H(self):
         p1 = secp256k1.plus(H.scalarMul(5), H.scalarMul(7))
         p2 = H.scalarMul(12)
         self.assertEqual(p1, p2)
 
-    def test_full_cross_G_H(self):    
+    def test_full_cross_G_H(self):
         p11 = secp256k1.plus(G.scalarMul(5), H.scalarMul(7))
         p12 = secp256k1.plus(G.scalarMul(11), H.scalarMul(13))
-        
+
         p1 = secp256k1.plus(p11, p12)
         p2 = secp256k1.plus(G.scalarMul(16), H.scalarMul(20))
         self.assertEqual(p1, p2)
@@ -44,14 +47,14 @@ class GeneratorTests(unittest.TestCase):
 
         self.assertTrue(secp256k1.plus(G.scalarMul(100).plusInv(), G.scalarMul(100)).isPlusID())
 
-        
+
     def test_owned_output(self):
         self.assertEqual(G.scalarMul(100), OwnedOutput(100, Signature.nF.fromInt(0)).blind())
         self.assertEqual(G.scalarMul(100).plusInv(), OwnedOutput(100, Signature.nF.fromInt(0)).blind().plusInv())
-        
+
         excess_add = Signature.gen_private_key()
         self.assertEqual(H.scalarMul(excess_add.plusInv().toInt()), H.scalarMul(excess_add.toInt()).plusInv())
-        
+
 class TestFoo(unittest.TestCase):
     def setUp(self):
         genesis_output = OwnedOutput.generate(1000)
@@ -59,19 +62,35 @@ class TestFoo(unittest.TestCase):
         self.c = Chain(genesis_output.blind())
         self.satoshi = Actor([genesis_output], self.c)
         self.clemens = Actor([], self.c)
-#        testy()
 
-    def test_null(self):
+    def test_ping_pong(self):
+        """Ping-pongs a few coins between satoshi and clemens."""
+        self.assertEqual(self.satoshi.coins_owned(), 1000)
+
         self.c.process_tx(self.clemens.receive(self.satoshi.send(100)))
+        self.assertEqual(self.satoshi.coins_owned(), 900)
+        self.assertEqual(self.clemens.coins_owned(), 100)
+
         with self.assertRaises(ValueError):
             self.c.process_tx(self.satoshi.receive(self.clemens.send(150)))
+        self.assertEqual(self.satoshi.coins_owned(), 900)
+        self.assertEqual(self.clemens.coins_owned(), 100)
+
         self.c.process_tx(self.clemens.receive(self.satoshi.send(150)))
+        self.assertEqual(self.clemens.coins_owned(), 250)
+        self.assertEqual(self.satoshi.coins_owned(), 750)
+
         with self.assertRaises(ValueError):
             self.c.process_tx(self.clemens.receive(self.satoshi.send(1050)))
-        print "Owned clemens:", self.clemens.coins_owned()
-        print "Owned satoshi:", self.satoshi.coins_owned()
+        self.assertEqual(self.clemens.coins_owned(), 250)
+        self.assertEqual(self.satoshi.coins_owned(), 750)
+
         self.c.process_tx(self.satoshi.receive(self.clemens.send(250)))
-                          
+        self.assertEqual(self.clemens.coins_owned(), 0)
+        self.assertEqual(self.satoshi.coins_owned(), 1000)
+
+    # FIXME add malicious receivers as discussed in Actor.receive comments.
+
     def xtest_input_txid_error(self):
         tx = Transaction([], [])
         s_to_c = Transaction(
