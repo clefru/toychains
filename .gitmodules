@@ -1,0 +1,3 @@
+[submodule "toycrypto"]
+	path = toycrypto
+	url = https://github.com/clefru/toycrypto

@@ -44,16 +44,15 @@ class GeneratorTests(unittest.TestCase):
         p2 = secp256k1.plus(G.scalarMul(5), H.scalarMul(0))
         self.assertEqual(p1, p2)
         #        assert H.scalarMul(excess_add.plusInv().toInt()) == H.scalarMul(excess_add.toInt()).plusInv()
-
         self.assertTrue(secp256k1.plus(G.scalarMul(100).plusInv(), G.scalarMul(100)).isPlusID())
 
 
     def test_owned_output(self):
-        self.assertEqual(G.scalarMul(100), OwnedOutput(100, Signature.nF.fromInt(0)).blind())
-        self.assertEqual(G.scalarMul(100).plusInv(), OwnedOutput(100, Signature.nF.fromInt(0)).blind().plusInv())
+        self.assertEqual(G.scalarMul(100), OwnedOutput(100, Signature.nF.make(0)).blind())
+        self.assertEqual(G.scalarMul(100).plusInv(), OwnedOutput(100, Signature.nF.make(0)).blind().plusInv())
 
         excess_add = Signature.gen_private_key()
-        self.assertEqual(H.scalarMul(excess_add.plusInv().toInt()), H.scalarMul(excess_add.toInt()).plusInv())
+        self.assertEqual(H.scalarMul(int(excess_add.plusInv())), H.scalarMul(int(excess_add)).plusInv())
 
 class TestFoo(unittest.TestCase):
     def setUp(self):

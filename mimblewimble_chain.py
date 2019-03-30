@@ -5,15 +5,17 @@ import hashlib
 import collections
 import os
 import random
-from tmath import *
+
+from toycrypto.ec import *
+from toycrypto.primefields import *
 
 
 p = 2 ** 256 - 2 ** 32 - 2 ** 9 - 2 ** 8 - 2 ** 7 - 2 ** 6 - 2 ** 4 - 1
 z = Z(p)
-secp256k1 = EC(z, z.fromInt(0), z.fromInt(7))
+secp256k1 = EC(z, z.make(0), z.make(7))
 # This random value for G is a random value. Trust me. Winkwink. Follow https://people.xiph.org/~greg/confidential_values.txt suggestion of taking the sha256 of the generator H
-G = secp256k1.fromX(z.fromInt(0x19BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81797))
-H = secp256k1.fromX(z.fromInt(0x79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798))
+G = secp256k1.fromX(z.make(0x19BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81797))
+H = secp256k1.fromX(z.make(0x79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798))
 
 # I could rename this open commitment
 class OwnedOutput(collections.namedtuple("OwnedOutput", ["value", "bf"])):
@@ -23,7 +25,7 @@ class OwnedOutput(collections.namedtuple("OwnedOutput", ["value", "bf"])):
 
     # Rename this function .commit()?
     def blind(self):
-        res = secp256k1.plus(H.scalarMul(self.bf.toInt()), G.scalarMul(self.value))
+        res = secp256k1.plus(H.scalarMul(int(self.bf)), G.scalarMul(self.value))
 #        print "%s * G + %s * H = %s" % (self.value, self.bf, res)
         return res
 
@@ -213,19 +215,19 @@ class Signature(collections.namedtuple("Signature", ["s", "K"])):
     @classmethod
     def sign(cls, e, x):
         k = cls.gen_private_key()
-        s = cls.nF.plus(k, cls.nF.mul(x, cls.nF.fromInt(e)))
-        return Signature(s, cls.Hfield.fromInt(k.toInt()).point)
+        s = cls.nF.plus(k, cls.nF.mul(x, cls.nF.make(e)))
+        return Signature(s, cls.Hfield.make(int(k)).point)
 
     @classmethod
     def merge(cls, s1, s2):
         return Signature(cls.nF.plus(s1.s, s2.s), secp256k1.plus(s1.K, s2.K))
 
     def verify(self, pubKey, e):
-        S = Signature.Hfield.fromInt(self.s.toInt()).point
+        S = Signature.Hfield.make(int(self.s)).point
         V = Signature.Hfield.ec.plus(self.K, pubKey.scalarMul(e))
         return S == V
 
     @classmethod
     def gen_private_key(cls):
-        return cls.nF.fromInt(random.randrange(1, Signature.Hfield.order))
+        return cls.nF.make(random.randrange(1, Signature.Hfield.order))
 #        return cls.nF.fromInt(random.randrange(1, 30))
